@@ -15,6 +15,7 @@ import shutil
 from gmusicapi import CallFailure
 from gmusicapi.clients import Musicmanager, OAUTH_FILEPATH
 
+
 INVALID_CHARS = {
 	'\\': '-', '/': ',', ':': '-', '*': 'x', '<': '[',
 	'>': ']', '|': '!', '?': '', '"': "''"
@@ -32,7 +33,8 @@ TEMPLATE_PATTERNS = {
 
 # Parse command line for arguments.
 parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
-parser.add_argument('-c', '--cred', default='oauth', help='Specify oauth credential file name to use/create\n(Default: "oauth" -> ' + OAUTH_FILEPATH + ')')
+parser.add_argument('-c', '--cred', default='oauth', help='Specify oauth credential file name to use/create\n(Default: ' + OAUTH_FILEPATH + ')')
+parser.add_argument('-u', '--uploader-id', default=None, help='A unique id as a MAC address, e.g. "00:11:22:33:AA:BB"\nThis should only be provided in cases where the default\n(host MAC address incremented by 1) will not work')
 parser.add_argument('-l', '--log', action='store_true', default=False, help='Enable gmusicapi logging')
 parser.add_argument('-f', '--filter', action='append', help='Filter Google songs by field:pattern pair (e.g. "artist:Muse")\nThis option can be set multiple times')
 parser.add_argument('-a', '--all', action='store_true', default=False, help='Songs must match all filter criteria\n(Default: Songs can match any filter criteria')
@@ -57,16 +59,22 @@ def do_auth():
 
 	# Attempt to login. Perform oauth only when necessary.
 	while attempts < 3:
-		if mm.login(oauth_credentials=oauth_file):
-			break
+		try:
+			if mm.login(oauth_credentials=oauth_file, uploader_id=opts.uploader_id):
+				break
+		except OSError as e:
+			_print("\nSorry, login failed: {0}".format(e))
+			return False
+
 		mm.perform_oauth(storage_filepath=oauth_file)
 		attempts += 1
 
 	if not mm.is_authenticated():
-		_print("Sorry, login failed.")
-		return
+		_print("\nSorry, login failed.")
+		return False
 
 	_print("Successfully logged in.\n")
+	return True
 
 
 def do_download(songs, total):
@@ -158,21 +166,31 @@ def make_file_name(filename, audio):
 
 		for i, part in enumerate(parts):
 			for key in TEMPLATE_PATTERNS:
-				if key in part and TEMPLATE_PATTERNS[key] in tag:
+				if key not in part:
+					continue
+
+				# Replace the output pattern with the corresponding tag value if present.
+				# Otherwise replace it with 'unnknown'.
+				key_val = 'unknown'
+				if TEMPLATE_PATTERNS[key] in tag:
 					if key == '%tr2%':
 						tag['tracknumber'] = tag['tracknumber'][0].zfill(2)
 						tag.save()
 
-					parts[i] = parts[i].replace(key, tag[TEMPLATE_PATTERNS[key]][0])
+					key_val = tag[TEMPLATE_PATTERNS[key]][0]
+
+				parts[i] = parts[i].replace(key, key_val)
 
 			for char in INVALID_CHARS:
 				if char in parts[i]:
 					parts[i] = parts[i].replace(char, INVALID_CHARS[char])
 
-		filename = os.path.join(drive, *parts) + '.mp3'
+		filename = os.path.join(drive, os.sep, *parts)
+
+		if not filename.endswith('.mp3'):
+			filename += '.mp3'
 
 		basename, __ = os.path.split(filename)
-
 		if basename:
 			try:
 				os.makedirs(basename)
@@ -184,7 +202,8 @@ def make_file_name(filename, audio):
 
 
 def main():
-	do_auth()
+	if not do_auth():
+		return False
 
 	if opts.filter:
 		filters = [
